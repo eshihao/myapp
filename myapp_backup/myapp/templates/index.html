@@ -1,0 +1,459 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>冠脉介入术前智能分析平台</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+<link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css" rel="stylesheet">
+<script src="https://unpkg.com/three@0.139.0/build/three.min.js"></script>
+<script src="https://unpkg.com/three@0.139.0/examples/js/controls/OrbitControls.js"></script>
+<style>
+body {
+    font-family: "Segoe UI","Microsoft YaHei",sans-serif;
+    background: url('https://images.unsplash.com/photo-1581091215360-88822f024e97') no-repeat center center fixed;
+    background-size: cover;
+}
+.main-layout {
+    height: 100vh;
+    display: flex;
+    padding: 20px;
+    gap: 15px;
+}
+.panel {
+    background: rgba(255,255,255,0.9);
+    border-radius: 16px;
+    box-shadow: 0 10px 25px rgba(0,0,0,0.25);
+    padding: 15px;
+    display: flex;
+    flex-direction: column;
+}
+#conversation-panel { width: 25%; }
+.conversation-item {
+    padding: 10px 12px;
+    border-radius: 10px;
+    cursor: pointer;
+    margin-bottom: 6px;
+}
+.conversation-item.active,
+.conversation-item:hover {
+    background: linear-gradient(45deg,#00c6ff,#0072ff);
+    color: #fff;
+}
+#chat-panel { width: 50%; }
+#chat-box { flex: 1; overflow-y: auto; padding: 10px; }
+.chat-message { display: flex; margin-bottom: 12px; }
+.chat-message.user { justify-content: flex-end; }
+.chat-bubble {
+    max-width: 70%;
+    padding: 12px 16px;
+    border-radius: 18px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+}
+.chat-message.user .chat-bubble {
+    background: #0072ff;
+    color: #fff;
+    border-bottom-right-radius: 0;
+}
+.chat-message.bot .chat-bubble {
+    background: #e0f0ff;
+    color: #004080;
+    border-bottom-left-radius: 0;
+}
+#tool-panel { width: 25%; gap: 12px; }
+.tool-card {
+    background: rgba(255,255,255,0.95);
+    border-radius: 14px;
+    padding: 12px;
+    box-shadow: 0 6px 18px rgba(0,0,0,0.25);
+}
+.tool-title {
+    font-weight: 600;
+    color: #004080;
+    margin-bottom: 8px;
+}
+/* 对话删除按钮（轻量蓝色风格） */
+.conversation-item .delete-btn {
+    background: transparent;
+    border: none;
+    color: #6bbcff;            /* 淡蓝色 */
+    padding: 4px 6px;
+    border-radius: 8px;
+    font-size: 14px;
+    line-height: 1;
+    transition: all 0.2s ease;
+}
+
+.conversation-item .delete-btn:hover {
+    background: rgba(0, 114, 255, 0.12);
+    color: #0072ff;
+}
+
+.conversation-item .delete-btn:focus {
+    outline: none;
+    box-shadow: none;
+}
+
+#cta3d-container {
+    height: 180px;
+    border-radius: 10px;
+    overflow: hidden;
+    position: relative;
+}
+canvas#cta3d { display: block; }
+</style>
+</head>
+<body>
+<div class="main-layout">
+    <div id="conversation-panel" class="panel">
+        <h5 class="mb-3"><i class="fas fa-comments"></i> 对话列表</h5>
+        <button class="btn btn-sm btn-primary mb-2" onclick="newConversation()">
+            <i class="fas fa-plus"></i> 新建对话
+        </button>
+        <div id="conversationList"></div>
+        <button class="btn btn-sm btn-primary mt-2 w-100" onclick="newConversation()">
+</button>
+    </div>
+    <div id="chat-panel" class="panel">
+        <h5><i class="fas fa-robot"></i> 智能对话</h5>
+        <div id="chat-box"></div>
+        <div class="input-group mt-2">
+            <input id="chatInput" class="form-control" placeholder="请输入问题...">
+            <button class="btn btn-primary" onclick="sendMessage()">
+                <i class="fas fa-paper-plane"></i>
+            </button>
+        </div>
+    </div>
+    <div id="tool-panel" class="panel">
+        <div class="tool-card">
+            <div class="tool-title"><i class="fas fa-upload"></i> 文件上传</div>
+            <input type="file" id="npyFile" class="form-control mb-2" accept=".npy">
+            <button class="btn btn-sm btn-success w-100" onclick="uploadFile()">上传 npy</button>
+        </div>
+        <div class="tool-card">
+            <div class="tool-title"><i class="fas fa-3d-cube"></i> CTA 可视化</div>
+            <div id="cta3d-container">
+                <canvas id="cta3d"></canvas>
+            </div>
+        </div>
+        <div class="tool-card">
+            <div class="tool-title"><i class="fas fa-brain"></i> 智能分析</div>
+            <small class="text-muted">预留：Syntax / 病变分析</small>
+        </div>
+        <div class="tool-card">
+            <div class="tool-title"><i class="fas fa-exclamation-triangle"></i> 风险评估</div>
+            <small class="text-muted">预留：介入风险分层</small>
+        </div>
+    </div>
+</div>
+
+<script>
+// ===== npy 解析器 =====
+const npyjs = (function() {
+  function checkMagic(buffer) {
+      const magic = new Uint8Array(buffer.slice(0, 6));
+      return magic[0] === 0x93 &&
+             magic[1] === 0x4E &&
+             magic[2] === 0x55 &&
+             magic[3] === 0x4D &&
+             magic[4] === 0x50 &&
+             magic[5] === 0x59;
+  }
+
+  async function parse(file) {
+    let buffer;
+    if (typeof file === 'string') {
+      buffer = await fetch(file).then(res => res.arrayBuffer());
+    } else {
+      buffer = await file.arrayBuffer();
+    }
+
+    if (!checkMagic(buffer)) throw new Error("不是有效的 .npy 文件（文件头不匹配）");
+
+    const dv = new DataView(buffer);
+    let offset = 6;
+    const version = [dv.getUint8(offset++), dv.getUint8(offset++)];
+    const headerLen = version[0] === 1 ? dv.getUint16(offset, true) : dv.getUint32(offset, true);
+    offset += version[0] === 1 ? 2 : 4;
+
+    const headerBytes = new Uint8Array(buffer.slice(offset, offset + headerLen));
+    let header = new TextDecoder().decode(headerBytes);
+    offset += headerLen;
+
+    header = header.trim().replace(/,\s*$/, '');
+    header = header.replace(/True/g, 'true').replace(/False/g, 'false');
+
+    let meta;
+    try {
+      meta = eval(`(${header})`);
+    } catch (e) {
+      throw new Error("无法解析 .npy 文件头: " + e.message);
+    }
+
+    const shape = meta.shape;
+    const dtype = meta.descr;
+
+    let TypedArray;
+    switch(dtype) {
+      case "|u1": TypedArray = Uint8Array; break;
+      case "<f4": TypedArray = Float32Array; break;
+      default: throw new Error("不支持的数据类型: " + dtype);
+    }
+
+    const data = new TypedArray(buffer.slice(offset));
+    return { shape, dtype, data };
+  }
+  return { parse };
+})();
+
+// ===== 3D 场景 =====
+let scene, camera, renderer, controls;
+function init3DScene() {
+    const container = document.getElementById('cta3d-container');
+    const canvas = document.getElementById('cta3d');
+    scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x0a0a0a);
+    camera = new THREE.PerspectiveCamera(45, container.clientWidth / container.clientHeight, 0.1, 1000);
+    camera.position.set(3, 3, 3);
+    renderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: true });
+    renderer.setSize(container.clientWidth, container.clientHeight);
+    renderer.setPixelRatio(window.devicePixelRatio);
+    controls = new THREE.OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.05;
+
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+    scene.add(ambientLight);
+    const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+    directionalLight.position.set(5, 5, 5);
+    scene.add(directionalLight);
+    const gridHelper = new THREE.GridHelper(10, 10, 0x444444, 0x222222);
+    scene.add(gridHelper);
+    const axesHelper = new THREE.AxesHelper(5);
+    scene.add(axesHelper);
+
+    function animate() {
+        requestAnimationFrame(animate);
+        controls.update();
+        renderer.render(scene, camera);
+    }
+    animate();
+
+    window.addEventListener('resize', () => {
+        camera.aspect = container.clientWidth / container.clientHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(container.clientWidth, container.clientHeight);
+    });
+}
+
+// ===== 可视化 =====
+function visualizeNPY(array) {
+    // 清理旧模型
+    scene.children = scene.children.filter(child => 
+        child instanceof THREE.Light || child instanceof THREE.GridHelper || child instanceof THREE.AxesHelper
+    );
+
+    const shape = array.shape;
+    const width = shape[0], height = shape[1], depth = shape[2] || 1;
+    const data = array.data;
+
+    // 归一化数据
+    let normalizedData;
+    if(array.dtype === "|u1"){
+        normalizedData = new Float32Array(data.length);
+        for(let i=0;i<data.length;i++) normalizedData[i] = data[i]/255.0;
+    }else{ // float32 医学影像
+        let min = Infinity, max = -Infinity;
+        for(let i=0;i<data.length;i++){
+            if(data[i]<min) min = data[i];
+            if(data[i]>max) max = data[i];
+        }
+        normalizedData = new Float32Array(data.length);
+        for(let i=0;i<data.length;i++){
+            normalizedData[i] = (data[i]-min)/(max-min);
+        }
+    }
+
+    const texture = new THREE.Data3DTexture(normalizedData, width, height, depth);
+    texture.format = THREE.RedFormat;
+    texture.type = THREE.FloatType;
+    texture.minFilter = THREE.LinearFilter;
+    texture.magFilter = THREE.LinearFilter;
+    texture.unpackAlignment = 1;
+    texture.needsUpdate = true;
+
+    const material = new THREE.ShaderMaterial({
+        uniforms: {
+            volumeTexture: { value: texture },
+            threshold: { value: 0.05 }  // 适当调节可见度
+        },
+        vertexShader: `
+            varying vec3 vPos;
+            void main() {
+                vPos = position;
+                gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+            }
+        `,
+        fragmentShader: `
+            precision highp float;
+            precision highp sampler3D;
+
+            uniform sampler3D volumeTexture;
+            uniform float threshold;
+            varying vec3 vPos;
+
+            void main() {
+                vec3 texCoord = vPos + 0.5;
+                float value = texture(volumeTexture, texCoord).r;
+                if(value < threshold) discard;
+                gl_FragColor = vec4(value,value,value,1.0);
+            }
+        `,
+        side: THREE.BackSide,
+        transparent: true
+    });
+
+    const geometry = new THREE.BoxGeometry(1,1,1);
+    const mesh = new THREE.Mesh(geometry, material);
+    scene.add(mesh);
+
+    camera.position.set(1.5,1.5,1.5);
+    controls.target.set(0,0,0);
+    controls.update();
+}
+
+// ===== 上传解析 =====
+async function uploadFile() {
+    const file = document.getElementById("npyFile").files[0];
+    if (!file) return;
+    const form = new FormData();
+    form.append("file", file);
+    const res = await fetch("/api/upload",{method:"POST", body:form});
+    const data = await res.json();
+    currentFileId = data.file_info?.file_id;
+    alert("文件上传成功");
+
+
+    if (!scene) init3DScene();
+    try {
+        const parsed = await npyjs.parse(file);
+        visualizeNPY(parsed);
+        console.log("解析成功:", parsed.shape, parsed.dtype);
+    } catch (err) {
+        alert("解析失败：" + err.message);
+        console.error("解析失败：", err);
+    }
+}
+
+// ===== 对话系统 =====
+let conversations = [];
+let currentConversationId = null;
+let currentFileId = null;
+
+// ---------------------
+// 加载会话列表（从后端获取）
+async function loadConversations() {
+    const res = await fetch("/api/conversations");
+    conversations = await res.json();
+    if(conversations.length > 0 && !currentConversationId) {
+        currentConversationId = conversations[0].id;
+    }
+    renderConversationList();
+    renderChat();
+}
+
+// 渲染对话列表
+function renderConversationList() {
+    const list = document.getElementById("conversationList");
+    list.innerHTML = "";
+    conversations.forEach(c=>{
+        const div = document.createElement("div");
+        div.className = "conversation-item" + (c.id===currentConversationId?" active":"");
+        div.innerHTML = `
+            <span>${c.title}</span>
+            <button class="delete-btn float-end" onclick="deleteConversation(${c.id})">
+                <i class="fas fa-trash"></i>
+            </button>
+        `;
+        div.onclick = ()=>{currentConversationId=c.id; renderChat(); renderConversationList();}
+        list.appendChild(div);
+    });
+}
+
+// ---------------------
+// 新建对话
+async function newConversation() {
+    const title = prompt("请输入对话标题", "新对话") || "新对话";
+    const res = await fetch("/api/conversations", {
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({title})
+    });
+    const data = await res.json();
+    await loadConversations();
+    currentConversationId = data.conversation_id;
+    renderChat();
+}
+
+// ---------------------
+// 删除对话
+async function deleteConversation(id){
+    if(!confirm("确认删除此对话？")) return;
+    const res = await fetch(`/api/conversations/${id}`,{method:"DELETE"});
+    const data = await res.json();
+    await loadConversations();
+    if(currentConversationId === id){
+        currentConversationId = conversations.length > 0 ? conversations[0].id : null;
+        renderChat();
+    }
+}
+
+// ---------------------
+// 渲染聊天（仍需 fetch 后端消息）
+async function renderChat(){
+    const box = document.getElementById("chat-box");
+    box.innerHTML = "";
+    if(!currentConversationId) return;
+    // 从后端获取消息
+    const res = await fetch(`/api/chat_history/${currentConversationId}`);
+    const messages = await res.json();
+    messages.forEach(m=>{
+        box.innerHTML += `
+        <div class="chat-message ${m.role==='user'?'user':'bot'}">
+            <div class="chat-bubble">${m.content}</div>
+        </div>`;
+    });
+    box.scrollTop = box.scrollHeight;
+}
+
+// ---------------------
+// 发送消息
+async function sendMessage() {
+    const input = document.getElementById("chatInput");
+    const text = input.value.trim();
+    if(!text || !currentConversationId) return;
+    input.value="";
+
+    // 发送到后端
+    const res = await fetch("/api/chat",{
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({
+            question:text,
+            conversation_id:currentConversationId,
+            file_id:currentFileId
+        })
+    });
+    const data = await res.json();
+    renderChat();
+}
+
+// ---------------------
+// 页面初始化
+window.onload = async ()=>{
+    await loadConversations();
+}
+
+newConversation();
+</script>
+</body>
+</html>
